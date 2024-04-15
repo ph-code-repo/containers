@@ -1,0 +1,118 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+
+%files
+	#load in files from host operating system
+
+%post
+	echo "--------------------Start--------------------"
+	#download files, install, write config, create new directories, etc.
+	#-System applications
+	export DEBIAN_FRONTEND=noninteratctive #silence some of the installed packages (tzdata)
+	#Add updated repositories
+	apt-get -y update && apt-get -y upgrade # run system setup
+	apt-get install -y software-properties-common #install add-apt-repository
+	#apt install net-tools
+	add-apt-repository ppa:deadsnakes/ppa -y #python distributions
+	add-apt-repository ppa:ubuntu-toolchain-r/test -y #fortran compiler
+
+	apt-get -y update && apt-get -y upgrade # run system setup
+	apt-get install -y wget git-all # download system applications
+	apt-get install -y xauth #X11-apps
+	apt-get install -y gfortran #For compiling some python libraries
+	#-Python
+	echo "--------------------Python--------------------"
+	apt-get install -y python3 # download python 3
+	apt-get install -y python-is-python3 python3-pip
+	update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+	pip install --upgrade pip
+	#-Anaconda
+	echo "--------------------Anaconda--------------------"
+	#--Dependencies
+	apt-get install -y libgl1-mesa-glx libegl1-mesa libxrandr2 libxrandr2 libxss1 libxcursor1 libxcomposite1 libasound2 libxi6 libxtst6 #Qt dependencies for GUI
+	wget https://repo.anaconda.com/archive/Anaconda3-2023.07-2-Linux-x86_64.sh #download
+	#--Check file integrity
+	echo '589fb34fe73bc303379abbceba50f3131254e85ce4e7cd819ba4276ba29cad16 *Anaconda3-2023.07-2-Linux-x86_64.sh' | sha256sum --check
+	#--silent install int /opt/anaconda
+	bash ./Anaconda3-2023.07-2-Linux-x86_64.sh -b -p /opt/anaconda #install anaconda
+	. /opt/anaconda/bin/activate #activate conda base environment
+	chmod -R o+rX /opt/anaconda #chnage permissions for anaconda
+	mkdir /opt/etc
+	printf "#! /usr/bin/env bash\n\n. /opt/anaconda/bin/activate\n" >> /opt/etc/load.sh
+	#--Conda installs need to use /opt/anaconda/bin/conda
+	#--Setup conda environment for pytorch to work correctly
+	conda create -n "pytorch" python=3.10
+	conda activate pytorch
+	printf "conda activate pytorch\n" >> /opt/etc/load.sh
+	echo "--------------------OpenCV--------------------"
+	#--TODO:opencv/opencv-contrib - full setup from source?
+	pip install opencv-python opencv-contrib-python
+	echo "--------------------PyTorch--------------------"
+	export CUDA_HOME=/usr/local/cuda-12.2 #backwards compatible
+	pip install torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1 --extra-index-url https://download.pytorch.org/whl/cu117
+	#export CUDA_HOME=/usr/local/cuda-11.8
+	#pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 #Get latest Pytorch - requires CUDA 11.8
+	echo "--------------------Requirements--------------------"
+	#--Standard systems and python requirements
+	apt install -y ffmpeg
+	pip install scipy pandas scikit-learn scikit-image pillow numpy matplotlib jupyter ffmpeg-python
+	#--ESCNN initialisation
+	pip install escnn
+	export ESCNN_TMP='/opt/anaconda/envs/pytorch/lib/python3.10/site-packages/escnn/group/_cache'
+	mkdir $ESCNN_TMP # make bind point
+
+	#python -c "import escnn" #initalise temporary directories for cache
+	#--Other libraries
+	pip install tqdm kornia
+	pip install tensorboardX #tensorflow
+	#pip install tqdm kornia albumentations mmcv easydict path colorlog pyflann-py3 h5py
+	echo "--------------------ARCCA--------------------"
+
+	echo "--------------------End--------------------"
+	echo ". /opt/etc/load.sh" >> $SINGULARITY_ENVIRONMENT #maybe depricated in future singularity
+
+%environment
+	#set environment variables
+	#--setup the environment variables for anaconda in the .bashrc file
+	unset DEBIAN_FRONTEND #remove environment variable
+	export CUDA_HOME=/usr/local/cuda-12.2
+	#export CUDA_HOME=/usr/local/cuda-11.8
+
+%test
+	#validate aspect of container
+	grep -q NAME=\"Ubuntu\" /etc/os-release
+	if [ $? -eq 0 ]; then
+		echo "Container base is Ubuntu as expected."
+	else
+		echo "container base is not Ubuntu."
+		exit 1
+	fi
+
+	echo "Check Python Version: $(python --version)"
+	echo "Check Conda Version: $(conda --version)"
+	#TODO: Check opencv working
+	echo "Check if environment active: $(echo $CONDA_DEFAULT_ENV)"
+	echo "Check CUDA_HOME: $(echo $CUDA_HOME)"
+	echo "Check Pytorch CUDA: $(printf 'import torch\nprint(torch.version.cuda)' | python)"
+	#echo "Check ESCNN installed correctly: $(printf 'import escnn\nprint(escnn.__version__)' | python)"
+
+%runscript
+	#written to file
+	#arguments following container name are passed to runscript at invocation
+	#source /opt/etc/.bashrc
+	export JOB_ID=$(date +"%m%d_%H%M%S")
+
+	echo "JOB_ID: $(echo $JOB_ID)"
+	mkdir "$HOME/jobs/$JOB_ID"
+	echo "Check if environment active: $(echo $CONDA_DEFAULT_ENV)"
+	echo "Check Pytorch CUDA: $(printf 'import torch\nprint(torch.cuda.device_count())' | python)"
+	echo "--------------------Begin RUNSCRIPT--------------------"
+	
+	#run python file
+	python train.py
+	python eval_with_extract.py
+
+%labels
+	Author Peter Herbert
+	Version v0.1.5
